@@ -16,7 +16,7 @@ with neither it answers 404 and the page says the feature is not available.
 
 Streams (chat in SSE) are passed through chunk by chunk; when the browser goes
 away the upstream connection is closed, so the gateway stops the engine."""
-import argparse, http.client, json, os, sys, urllib.parse
+import argparse, json, os, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -104,11 +104,12 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP and k.lower() != "origin"}
-        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=3600)
+        conn = responses_shim.gateway_connection(u)
         try:
             conn.request(self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
         except OSError as e:
+            conn.close()
             msg = ('{"error":{"message":"colibri non risponde su %s: %s"}}' % (u.netloc, e)).encode()
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
