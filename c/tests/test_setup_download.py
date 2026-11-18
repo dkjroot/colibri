@@ -8,6 +8,7 @@ Range restarts the file instead of appending a second copy, corrupt bytes never
 become a file without `.part`, and the token never follows the redirect.
 """
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -39,6 +40,43 @@ def make_repo(root):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     return files
+
+
+class ListingPaginationTest(unittest.TestCase):
+    base = "https://hub.example.test"
+    listing_url = base + "/api/models/" + REPO + "/tree/main?recursive=true"
+
+    def response(self, url, link, body):
+        response = io.BytesIO(body)
+        response.headers = {"Link": link}
+        response.geturl = lambda: url
+        return response
+
+    def test_authenticated_listing_accepts_same_origin_pages(self):
+        first = self.response(self.listing_url, '<?cursor=2>; rel="next"',
+                              b'[{"type":"file","path":"config.json","size":5}]')
+        second_url = self.listing_url.replace("?recursive=true", "?cursor=2")
+        third_url = "https://HUB.example.test:443/next"
+        second = self.response(second_url, f'<{third_url}>; rel="next"', b'[]')
+        third = self.response(third_url, "", b'[{"type":"file","path":"weights","size":9}]')
+        opener = mock.Mock(side_effect=[first, second, third])
+
+        files = setup_download.list_repo_files(REPO, base=self.base, token="test-token", opener=opener)
+
+        self.assertEqual([spec["path"] for spec in files], ["config.json", "weights"])
+        requests = [call.args[0] for call in opener.call_args_list]
+        self.assertEqual([req.full_url for req in requests], [self.listing_url, second_url, third_url])
+        self.assertEqual([req.get_header("Authorization") for req in requests], ["Bearer test-token"] * 3)
+
+    def test_authenticated_listing_rejects_off_origin_pages(self):
+        for target in ("//unrelated.example.test/next", "http://hub.example.test/next",
+                       "https://hub.example.test:444/next"):
+            with self.subTest(target=target):
+                opener = mock.Mock(return_value=self.response(
+                    self.listing_url, f'<{target}>; rel="next"', b'[]'))
+                with self.assertRaisesRegex(setup_download.DownloadError, "pagination changed origin"):
+                    setup_download.list_repo_files(REPO, base=self.base, token="test-token", opener=opener)
+                self.assertEqual(opener.call_count, 1)
 
 
 class DownloadTest(unittest.TestCase):

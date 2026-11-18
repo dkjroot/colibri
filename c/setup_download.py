@@ -83,6 +83,15 @@ def _matches(path, patterns):
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
+def _http_origin(url):
+    parsed = urllib.parse.urlsplit(url)
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme)
+    if default_port is None or parsed.hostname is None or parsed.username is not None:
+        raise ValueError("expected an HTTP URL without user information")
+    port = parsed.port
+    return parsed.scheme, parsed.hostname, default_port if port is None else port
+
+
 def list_repo_files(repo, revision="main", *, include=(), exclude=(), token=None,
                     base=None, opener=None, timeout=60):
     """Files of a model repository: [{path, size, sha256, git_oid}].
@@ -93,6 +102,7 @@ def list_repo_files(repo, revision="main", *, include=(), exclude=(), token=None
     opener = opener or urllib.request.urlopen
     url = (f"{base or endpoint()}/api/models/{repo}/tree/{urllib.parse.quote(revision, safe='')}"
            "?recursive=true")
+    listing_url = url
     files = []
     seen = 0
     while url:
@@ -100,6 +110,7 @@ def list_repo_files(repo, revision="main", *, include=(), exclude=(), token=None
             with opener(_request(url, token), timeout=timeout) as response:
                 entries = json.loads(response.read().decode("utf-8"))
                 link = response.headers.get("Link") or ""
+                page_url = response.geturl()
         except urllib.error.HTTPError as error:
             error.close()
             if error.code in (401, 403):
@@ -124,7 +135,14 @@ def list_repo_files(repo, revision="main", *, include=(), exclude=(), token=None
                           "git_oid": None if lfs else entry.get("oid")})
         seen += 1
         match = re.search(r'<([^>]+)>;\s*rel="next"', link)
-        url = match.group(1) if match else None
+        url = None
+        if match:
+            try:
+                url = urllib.parse.urljoin(page_url, match.group(1))
+                if token and _http_origin(url) != _http_origin(listing_url):
+                    raise ValueError("authenticated pagination changed origin")
+            except ValueError as error:
+                raise DownloadError(f"{repo}: invalid next listing page ({error})") from error
         if seen > 1000:
             raise DownloadError(f"{repo}: listing does not end")
     return files
