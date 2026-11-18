@@ -160,6 +160,12 @@ c/qwen38_2p4t_tiny_c/
 # Claude Code working directory (agent worktrees, session scratch) — never a repo artifact
 .claude/
 
+# Local Codex configuration and agent notes
+/.codex/
+/AGENTS.md
+/DEVELOPMENT.md
+/agent_docs/
+
 # DeepGEMM sm120 checkout made by c/tools/fetch_deepgemm.sh (pinned commit,
 # not vendored): the DeepSeek V4 DeepGEMM flavour's headers.
 c/third_party/deepgemm/
