@@ -428,7 +428,11 @@ class DownloadTest(unittest.TestCase):
             # A bounded probe may time out after transferring useful sample bytes.
             run.return_value = subprocess.CompletedProcess([], 28, "3000000", "timeout")
             self.assertEqual(setup_download.probe_throughput_windows(
-                "https://example.test/model", "curl.exe"), 3000000.0)
+                "https://example.test/model", "curl.exe", token="test-token"), 3000000.0)
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index("-H") + 1], "@-")
+            self.assertNotIn("test-token", " ".join(args))
+            self.assertEqual(run.call_args.kwargs["input"], "Authorization: Bearer test-token\n")
 
     def test_verify_file(self):
         name = "model-00001.safetensors"
@@ -448,7 +452,12 @@ class DownloadTest(unittest.TestCase):
             "import sys, urllib.request\n"
             "args = sys.argv[1:]\n"
             "out = args[args.index('-o') + 1]\n"
-            "data = urllib.request.urlopen(args[-1]).read()\n"
+            "req = urllib.request.Request(args[-1])\n"
+            "if '-H' in args:\n"
+            "    assert args[args.index('-H') + 1] == '@-'\n"
+            "    key, value = sys.stdin.readline().strip().split(': ', 1)\n"
+            "    req.add_unredirected_header(key, value)\n"
+            "data = urllib.request.urlopen(req).read()\n"
             "open(out, 'wb').write(data)\n")
         if os.name == "nt":
             wrapper = Path(self.tmp.name, "curl.cmd")
@@ -468,11 +477,13 @@ class DownloadTest(unittest.TestCase):
         seen = []
         with mock.patch.object(setup_download, "wsl_windows_path", side_effect=lambda p: p):
             result = setup_download.download_file_windows(
-                self.url(name), dest, self.spec(name), fake_curl,
+                self.url(name), dest, self.spec(name), fake_curl, token="test-token",
                 progress=lambda done, total: seen.append((done, total)))
         self.assertEqual(result, "downloaded")
         self.assertEqual(Path(dest).read_bytes(), self.files[name])
         self.assertEqual(seen[-1], (300_000, 300_000))
+        self.assertTrue(any(r["headers"].get("Authorization") == "Bearer test-token"
+                            for r in self.hub.requests if "/resolve/" in r["path"]))
         # A transfer that ends with the wrong bytes is not kept.
         other = "model-00001.safetensors"
         bad = dict(self.spec(other), sha256="0" * 64)

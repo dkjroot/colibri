@@ -25,6 +25,7 @@ machine (63 KB/s against 3.3 MB/s, measured). `probe_*` time a short ranged
 request on both sides, and `download_file` can hand the transfer to Windows'
 own curl.exe, writing into the same folder through its \\\\wsl.localhost path.
 """
+import contextlib
 import fnmatch
 import hashlib
 import http.client
@@ -338,14 +339,21 @@ def parse_curl_speed(text):
         return None
 
 
+def _curl_authorization(token):
+    if "\r" in token or "\n" in token:
+        raise DownloadError("invalid Hugging Face token")
+    return f"Authorization: Bearer {token}\n"
+
+
 def probe_throughput_windows(url, curl, *, token=None, max_bytes=4 << 20, max_seconds=8):
     cmd = [curl, "-s", "-L", "--fail", "-r", f"0-{max_bytes - 1}", "--max-time", str(int(max_seconds)),
            "-o", "NUL", "-w", "%{speed_download}", url]
     if token:
-        cmd[1:1] = ["-H", f"Authorization: Bearer {token}"]
+        cmd[1:1] = ["-H", "@-"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                                timeout=max_seconds + 20)
+                                timeout=max_seconds + 20,
+                                input=_curl_authorization(token) if token else None)
     except (OSError, subprocess.SubprocessError):
         return None
     # Exit 28 is the expected bound when a slow ranged sample hits --max-time;
@@ -376,10 +384,15 @@ def download_file_windows(url, dest, spec, curl, *, token=None, progress=None, v
             raise DownloadError("wslpath could not translate the target folder for curl.exe")
         cmd = [curl, "-L", "--fail", "--retry", "5", "--retry-delay", "3", "-s", "-S",
                "-C", "-", "-o", target, url]
+        authorization = _curl_authorization(token).encode("utf-8") if token else None
         if token:
-            cmd[1:1] = ["-H", f"Authorization: Bearer {token}"]
+            cmd[1:1] = ["-H", "@-"]
         with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as errors, \
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errors) as process:
+                subprocess.Popen(cmd, stdin=subprocess.PIPE if authorization else None,
+                                 stdout=subprocess.DEVNULL, stderr=errors) as process:
+            if authorization:
+                with contextlib.suppress(BrokenPipeError), process.stdin:
+                    process.stdin.write(authorization)
             while process.poll() is None:
                 time.sleep(1.0)
                 if progress and os.path.exists(part):
